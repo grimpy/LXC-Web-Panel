@@ -47,14 +47,14 @@ class CalledProcessError(Exception):
     pass
 
 cgroup = {}
-cgroup['type'] = 'lxc.network.type'
-cgroup['link'] = 'lxc.network.link'
-cgroup['flags'] = 'lxc.network.flags'
-cgroup['hwaddr'] = 'lxc.network.hwaddr'
+cgroup['type'] = 'lxc.network.%s.type'
+cgroup['link'] = 'lxc.network.%s.link'
+cgroup['flags'] = 'lxc.network.%s.flags'
+cgroup['hwaddr'] = 'lxc.network.%s.hwaddr'
+cgroup['ipv4'] = 'lxc.network.%s.ipv4'
 cgroup['rootfs'] = 'lxc.rootfs'
 cgroup['utsname'] = 'lxc.utsname'
 cgroup['arch'] = 'lxc.arch'
-cgroup['ipv4'] = 'lxc.network.ipv4'
 cgroup['memlimit'] = 'lxc.cgroup.memory.limit_in_bytes'
 cgroup['swlimit'] = 'lxc.cgroup.memory.memsw.limit_in_bytes'
 cgroup['cpus'] = 'lxc.cgroup.cpuset.cpus'
@@ -110,7 +110,7 @@ def memory_usage(container):
 
     cmd = ['lxc-cgroup -n %s memory.usage_in_bytes' % container.name]
     memory = container.get_cgroup_item('memory.usage_in_bytes')
-    return int(memory)/1024/1024
+    return round(int(memory)/1024/1024, 2)
 
 
 def host_memory_usage():
@@ -268,20 +268,24 @@ def get_container_settings(container):
     '''
     returns a dict of all utils settings for a container
     '''
-    if not container.load_config():
-        return False
-
     def get_key(key, default=None):
         try:
-            container.get_config_item(key)
+            return container.get_config_item(key)
         except KeyError:
             return default
 
-    cfg = {}
-    for key in ('type', 'flags', 'hwaddr', 'rootfs', 'utsname', 'arch', 'ipv4', 'cpus', 'shares'):
+    cfg = {'networks': []}
+    for key in ('rootfs', 'utsname', 'arch', 'cpus', 'shares'):
         cfg[key] = get_key(cgroup[key], '')
     for key in ('memlimit', 'swlimit'):
         cfg[key] = re.sub(r'[a-zA-z]', '', get_key(key, ''))
+
+    for idx in range(len(container.network)):
+        network = dict()
+        for key in ('type', 'flags', 'hwaddr', 'ipv4'):
+            network[key] = get_key(cgroup[key] % idx)
+        network['order'] = idx
+        cfg['networks'].append(network)
 
     if '%s.conf' % container.name in ls_auto():
         cfg['auto'] = True

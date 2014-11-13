@@ -27,6 +27,7 @@
 
 import lwp
 import lxc
+import lxclite
 import subprocess
 import time
 import re
@@ -133,7 +134,7 @@ def about():
     '''
 
     if 'logged_in' in session:
-        return render_template('about.html', containers=lxc.ls(),
+        return render_template('about.html', containers=lxc.list_containers(),
                                version=lwp.check_version())
     return render_template('login.html')
 
@@ -314,9 +315,12 @@ def edit(name=None):
         infos = {'status': status,
                  'pid': pid,
                  'memusg': lwp.memory_usage(container)}
+        settings = lwp.get_container_settings(container)
+        netstatus = 'up' in [ net['flags'] for net in settings['networks'] ]
         return render_template('edit.html', containers=lxc.list_containers(),
                                container=name, infos=infos,
-                               settings=lwp.get_container_settings(container),
+                               settings=settings,
+                               netstatus=netstatus,
                                host_memory=host_memory)
     return render_template('login.html')
 
@@ -415,9 +419,9 @@ def lxc_net():
             else:
                 flash(u'Stop all containers before restart lxc-net.',
                       'warning')
-        return render_template('lxc-net.html', containers=lxc.ls(),
+        return render_template('lxc-net.html', containers=lxc.list_containers(),
                                cfg=lwp.get_net_settings(),
-                               running=lxc.running())
+                               running=lxc.list_containers(defined=False))
     return render_template('login.html')
 
 
@@ -566,7 +570,7 @@ def lwp_users():
         su_users = query_db("SELECT COUNT(id) as num FROM users "
                             "WHERE su='Yes'", [], one=True)
 
-        return render_template('users.html', containers=lxc.ls(), users=users,
+        return render_template('users.html', containers=lxc.list_containers(), users=users,
                                nb_users=nb_users, su_users=su_users)
     return render_template('login.html')
 
@@ -580,8 +584,8 @@ def checkconfig():
         if session['su'] != 'Yes':
             return abort(403)
 
-        return render_template('checkconfig.html', containers=lxc.ls(),
-                               cfg=lxc.checkconfig())
+        return render_template('checkconfig.html', containers=lxc.list_containers(),
+                               cfg=lxclite.checkconfig())
     return render_template('login.html')
 
 
@@ -768,22 +772,14 @@ def clone_container():
                 snapshot = False
 
             if re.match('^(?!^containers$)|[a-zA-Z0-9_-]+$', name):
-                out = None
-
-                try:
-                    out = lxc.clone(orig=orig, new=name, snapshot=snapshot)
-                except lxc.ContainerAlreadyExists:
-                    flash(u'The Container %s already exists!' % name, 'error')
-                except subprocess.CalledProcessError:
-                    flash(u'Can\'t snapshot a directory', 'error')
-
-                if out and out == 0:
-                    flash(u'Container %s cloned into %s successfully!'
-                          % (orig, name), 'success')
-                elif out and out != 0:
+                container = lxc.Container(orig)
+                flags = 0 if not snapshot else lxc.LXC_CLONE_SNAPSHOT
+                if not container.clone(name, flags=flags):
                     flash(u'Failed to clone %s into %s!' % (orig, name),
                           'error')
-
+                else:
+                    flash(u'Container %s cloned into %s successfully!'
+                          % (orig, name), 'success')
             else:
                 if name == '':
                     flash(u'Please enter a container name!', 'error')
