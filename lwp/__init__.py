@@ -27,8 +27,8 @@
 # THE SOFTWARE.
 
 import sys
+import lxc
 sys.path.append('../')
-from lxclite import exists, stopped, ContainerDoesntExists
 
 import os
 import platform
@@ -42,12 +42,6 @@ try:
     from urllib.request import urlopen
 except ImportError:
     from urllib2 import urlopen
-
-try:
-    import configparser
-except ImportError:
-    import ConfigParser as configparser
-
 
 class CalledProcessError(Exception):
     pass
@@ -67,12 +61,6 @@ cgroup['cpus'] = 'lxc.cgroup.cpuset.cpus'
 cgroup['shares'] = 'lxc.cgroup.cpu.shares'
 cgroup['deny'] = 'lxc.cgroup.devices.deny'
 cgroup['allow'] = 'lxc.cgroup.devices.allow'
-
-
-def FakeSection(fp):
-    content = u"[DEFAULT]\n%s" % fp.read()
-
-    return StringIO(content)
 
 
 def DelSection(filename=None):
@@ -113,24 +101,16 @@ def ls_auto():
     return auto_list
 
 
-def memory_usage(name):
+def memory_usage(container):
     '''
     returns memory usage in MB
     '''
-    if not exists(name):
-        raise ContainerDoesntExists(
-            "The container (%s) does not exist!" % name)
-
-    if name in stopped():
+    if container.state  == "STOPPED":
         return 0
 
-    cmd = ['lxc-cgroup -n %s memory.usage_in_bytes' % name]
-    try:
-        out = subprocess.check_output(cmd, shell=True,
-                                      universal_newlines=True).splitlines()
-    except:
-        return 0
-    return int(out[0])/1024/1024
+    cmd = ['lxc-cgroup -n %s memory.usage_in_bytes' % container.name]
+    memory = container.get_cgroup_item('memory.usage_in_bytes')
+    return int(memory)/1024/1024
 
 
 def host_memory_usage():
@@ -284,73 +264,26 @@ def get_net_settings():
     return cfg
 
 
-def get_container_settings(name):
+def get_container_settings(container):
     '''
     returns a dict of all utils settings for a container
     '''
-
-    if os.geteuid():
-        filename = os.path.expanduser('~/.local/share/lxc/%s/config' % name)
-    else:
-        filename = '/var/lib/lxc/%s/config' % name
-
-    if not file_exist(filename):
+    if not container.load_config():
         return False
-    config = configparser.SafeConfigParser()
-    cfg = {}
-    config.readfp(FakeSection(open(filename)))
-    try:
-        cfg['type'] = config.get('DEFAULT', cgroup['type'])
-    except configparser.NoOptionError:
-        cfg['type'] = ''
-    try:
-        cfg['link'] = config.get('DEFAULT', cgroup['link'])
-    except configparser.NoOptionError:
-        cfg['link'] = ''
-    try:
-        cfg['flags'] = config.get('DEFAULT', cgroup['flags'])
-    except configparser.NoOptionError:
-        cfg['flags'] = ''
-    try:
-        cfg['hwaddr'] = config.get('DEFAULT', cgroup['hwaddr'])
-    except configparser.NoOptionError:
-        cfg['hwaddr'] = ''
-    try:
-        cfg['rootfs'] = config.get('DEFAULT', cgroup['rootfs'])
-    except configparser.NoOptionError:
-        cfg['rootfs'] = ''
-    try:
-        cfg['utsname'] = config.get('DEFAULT', cgroup['utsname'])
-    except configparser.NoOptionError:
-        cfg['utsname'] = ''
-    try:
-        cfg['arch'] = config.get('DEFAULT', cgroup['arch'])
-    except configparser.NoOptionError:
-        cfg['arch'] = ''
-    try:
-        cfg['ipv4'] = config.get('DEFAULT', cgroup['ipv4'])
-    except configparser.NoOptionError:
-        cfg['ipv4'] = ''
-    try:
-        cfg['memlimit'] = re.sub(r'[a-zA-Z]', '',
-                                 config.get('DEFAULT', cgroup['memlimit']))
-    except configparser.NoOptionError:
-        cfg['memlimit'] = ''
-    try:
-        cfg['swlimit'] = re.sub(r'[a-zA-Z]', '',
-                                config.get('DEFAULT', cgroup['swlimit']))
-    except configparser.NoOptionError:
-        cfg['swlimit'] = ''
-    try:
-        cfg['cpus'] = config.get('DEFAULT', cgroup['cpus'])
-    except configparser.NoOptionError:
-        cfg['cpus'] = ''
-    try:
-        cfg['shares'] = config.get('DEFAULT', cgroup['shares'])
-    except configparser.NoOptionError:
-        cfg['shares'] = ''
 
-    if '%s.conf' % name in ls_auto():
+    def get_key(key, default=None):
+        try:
+            container.get_config_item(key)
+        except KeyError:
+            return default
+
+    cfg = {}
+    for key in ('type', 'flags', 'hwaddr', 'rootfs', 'utsname', 'arch', 'ipv4', 'cpus', 'shares'):
+        cfg[key] = get_key(cgroup[key], '')
+    for key in ('memlimit', 'swlimit'):
+        cfg[key] = re.sub(r'[a-zA-z]', '', get_key(key, ''))
+
+    if '%s.conf' % container.name in ls_auto():
         cfg['auto'] = True
     else:
         cfg['auto'] = False

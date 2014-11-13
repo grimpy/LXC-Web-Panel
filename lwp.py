@@ -1,4 +1,3 @@
-# LXC Python Library
 # for compatibility with LXC 0.8 and 0.9
 # on Ubuntu 12.04/12.10/13.04
 
@@ -26,8 +25,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-import lxclite as lxc
 import lwp
+import lxc
 import subprocess
 import time
 import re
@@ -95,17 +94,23 @@ def home():
     '''
     home page function
     '''
-
     if 'logged_in' in session:
-        listx = lxc.listx()
+        containers = lxc.list_containers(as_object=True)
+        listx = {'RUNNING': [], 'FROZEN': [], 'STOPPED': []}
+        for container in containers:
+            listx[container.state].append(container)
         containers_all = []
 
         for status in ['RUNNING', 'FROZEN', 'STOPPED']:
             containers_by_status = []
 
             for container in listx[status]:
+                ips = list()
+                if status == 'RUNNING':
+                    ips = container.get_ips()
                 containers_by_status.append({
-                    'name': container,
+                    'name': container.name,
+                    'ips': ips,
                     'memusg': lwp.memory_usage(container),
                     'settings': lwp.get_container_settings(container)
                 })
@@ -114,7 +119,7 @@ def home():
                 'containers': containers_by_status
             })
 
-        return render_template('index.html', containers=lxc.ls(),
+        return render_template('index.html', containers=lxc.list_containers(),
                                containers_all=containers_all,
                                dist=lwp.check_ubuntu(),
                                templates=lwp.get_templates_list())
@@ -133,8 +138,8 @@ def about():
     return render_template('login.html')
 
 
-@app.route('/<container>/edit', methods=['POST', 'GET'])
-def edit(container=None):
+@app.route('/<name>/edit', methods=['POST', 'GET'])
+def edit(name=None):
     '''
     edit containers page and actions if form post request
     '''
@@ -301,15 +306,16 @@ def edit(container=None):
                 except OSError:
                     flash(u'Unable to remove symlink', 'error')
 
-        info = lxc.info(container)
-        status = info['state']
-        pid = info['pid']
+        info = dict()
+        container = lxc.Container(name)
+        status = container.state
+        pid = container.init_pid
 
         infos = {'status': status,
                  'pid': pid,
                  'memusg': lwp.memory_usage(container)}
-        return render_template('edit.html', containers=lxc.ls(),
-                               container=container, infos=infos,
+        return render_template('edit.html', containers=lxc.list_containers(),
+                               container=name, infos=infos,
                                settings=lwp.get_container_settings(container),
                                host_memory=host_memory)
     return render_template('login.html')
@@ -589,51 +595,40 @@ def action():
         if request.args['token'] == session.get('token'):
             action = request.args['action']
             name = request.args['name']
+            container = lxc.Container(name)
 
             if action == 'start':
-                try:
-                    if lxc.start(name) == 0:
-                        # Fix bug : "the container is randomly not
-                        #            displayed in overview list after a boot"
-                        time.sleep(1)
-                        flash(u'Container %s started successfully!' % name,
-                              'success')
-                    else:
-                        flash(u'Unable to start %s!' % name, 'error')
-                except lxc.ContainerAlreadyRunning:
-                    flash(u'Container %s is already running!' % name, 'error')
+                if container.start():
+                    # Fix bug : "the container is randomly not
+                    #            displayed in overview list after a boot"
+                    time.sleep(1)
+                    flash(u'Container %s started successfully!' % name,
+                          'success')
+                else:
+                    flash(u'Unable to start %s!' % name, 'error')
             elif action == 'stop':
-                try:
-                    if lxc.stop(name) == 0:
-                        flash(u'Container %s stopped successfully!' % name,
-                              'success')
-                    else:
-                        flash(u'Unable to stop %s!' % name, 'error')
-                except lxc.ContainerNotRunning:
-                    flash(u'Container %s is already stopped!' % name, 'error')
+                if container.stop():
+                    flash(u'Container %s stopped successfully!' % name,
+                          'success')
+                else:
+                    flash(u'Unable to stop %s!' % name, 'error')
             elif action == 'freeze':
-                try:
-                    if lxc.freeze(name) == 0:
-                        flash(u'Container %s frozen successfully!' % name,
-                              'success')
-                    else:
-                        flash(u'Unable to freeze %s!' % name, 'error')
-                except lxc.ContainerNotRunning:
-                    flash(u'Container %s not running!' % name, 'error')
+                if container.freeze():
+                    flash(u'Container %s frozen successfully!' % name,
+                          'success')
+                else:
+                    flash(u'Unable to freeze %s!' % name, 'error')
             elif action == 'unfreeze':
-                try:
-                    if lxc.unfreeze(name) == 0:
-                        flash(u'Container %s unfrozen successfully!' % name,
-                              'success')
-                    else:
-                        flash(u'Unable to unfeeze %s!' % name, 'error')
-                except lxc.ContainerNotRunning:
-                    flash(u'Container %s not frozen!' % name, 'error')
+                if container.unfreeze():
+                    flash(u'Container %s unfrozen successfully!' % name,
+                          'success')
+                else:
+                    flash(u'Unable to unfeeze %s!' % name, 'error')
             elif action == 'destroy':
                 if session['su'] != 'Yes':
                     return abort(403)
                 try:
-                    if lxc.destroy(name) == 0:
+                    if container.destroy():
                         flash(u'Container %s destroyed successfully!' % name,
                               'success')
                     else:
@@ -863,16 +858,16 @@ def refresh_disk_host():
 def refresh_memory_containers(name=None):
     if 'logged_in' in session:
         if name == 'containers':
-            containers_running = lxc.running()
+            containers_running = lxc.list_containers(active=True, defined=False, as_object=True)
             containers = []
             for container in containers_running:
-                container = container.replace(' (auto)', '')
-                containers.append({'name': container,
+                name = container.name.replace(' (auto)', '')
+                containers.append({'name': name,
                                    'memusg': lwp.memory_usage(container)})
             return jsonify(data=containers)
         elif name == 'host':
             return jsonify(lwp.host_memory_usage())
-        return jsonify({'memusg': lwp.memory_usage(name)})
+        return jsonify({'memusg': lwp.memory_usage(lxc.Container(name))})
 
 
 @app.route('/_check_version')
