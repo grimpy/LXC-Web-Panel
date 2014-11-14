@@ -108,7 +108,6 @@ def memory_usage(container):
     if container.state  == "STOPPED":
         return 0
 
-    cmd = ['lxc-cgroup -n %s memory.usage_in_bytes' % container.name]
     memory = container.get_cgroup_item('memory.usage_in_bytes')
     return round(int(memory)/1024/1024, 2)
 
@@ -282,7 +281,7 @@ def get_container_settings(container):
 
     for idx in range(len(container.network)):
         network = dict()
-        for key in ('type', 'flags', 'hwaddr', 'ipv4'):
+        for key in ('type', 'link', 'flags', 'hwaddr', 'ipv4'):
             network[key] = get_key(cgroup[key] % idx)
         network['order'] = idx
         cfg['networks'].append(network)

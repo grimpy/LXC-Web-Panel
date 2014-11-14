@@ -27,7 +27,6 @@
 # THE SOFTWARE.
 
 import subprocess
-import os
 
 
 def _run(cmd, output=False):
