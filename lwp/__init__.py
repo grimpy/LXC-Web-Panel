@@ -274,10 +274,18 @@ def get_container_settings(container):
             return default
 
     cfg = {'networks': []}
-    for key in ('rootfs', 'utsname', 'arch', 'cpus', 'shares'):
+    for key in ('rootfs', 'utsname', 'arch'):
         cfg[key] = get_key(cgroup[key], '')
-    for key in ('memlimit', 'swlimit'):
-        cfg[key] = re.sub(r'[a-zA-z]', '', get_key(key, ''))
+    for key in ('memlimit', 'swlimit', 'cpus', 'shares'):
+        value = get_key(cgroup[key])
+        if isinstance(value, list):
+            value = value[0]
+        if value:
+            value = re.sub(r'[a-zA-z]', '', value)
+            value = int(value)
+        else:
+            value = 0
+        cfg[key] = value
 
     for idx in range(len(container.network)):
         network = dict()

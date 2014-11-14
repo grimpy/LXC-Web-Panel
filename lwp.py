@@ -147,103 +147,94 @@ def edit(name=None):
 
     if 'logged_in' in session:
         host_memory = lwp.host_memory_usage()
+        container = lxc.Container(name)
         if request.method == 'POST':
             cfg = lwp.get_container_settings(container)
             ip_regex = '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?).(25[0-5]' \
                        '|2[0-4][0-9]|[01]?[0-9][0-9]?).(25[0-5]|2[0-4]' \
                        '[0-9]|[01]?[0-9][0-9]?).(25[0-5]|2[0-4][0-9]|[01]' \
                        '?[0-9][0-9]?)(/(3[0-2]|[12]?[0-9]))?'
-            info = lxc.info(container)
+
+            def get_int(data, key):
+                value = data.get(key)
+                if value and value.isdigit():
+                    return int(value)
+                return 0
 
             form = {}
-            form['type'] = request.form['type']
-            form['link'] = request.form['link']
-            try:
-                form['flags'] = request.form['flags']
-            except KeyError:
-                form['flags'] = 'down'
-            form['hwaddr'] = request.form['hwaddress']
+            def parse_network():
+                networks = list()
+                for key, value in request.form.items():
+                    if key.startswith('network'):
+                        _, order, key = key.split('.')
+                        order = int(order) 
+                        if order + 1 > len(networks):
+                            network = {'flags': 'down'}
+                            networks.append(network)
+                        else:
+                            network = networks[order]
+                        network[key] = value
+                return networks
+
+            networks = parse_network()
+
             form['rootfs'] = request.form['rootfs']
             form['utsname'] = request.form['hostname']
-            form['ipv4'] = request.form['ipaddress']
-            form['memlimit'] = request.form['memlimit']
-            form['swlimit'] = request.form['swlimit']
-            form['cpus'] = request.form['cpus']
-            form['shares'] = request.form['cpushares']
+            form['memlimit'] = get_int(request.form, 'memlimit')
+            form['swlimit'] = get_int(request.form, 'swlimit')
+            form['cpus'] = get_int(request.form, 'cpus')
+            form['shares'] = get_int(request.form, 'cpushares')
             try:
                 form['autostart'] = request.form['autostart']
             except KeyError:
                 form['autostart'] = False
+
+            for idx, network in enumerate(networks):
+                if network['flags'] == 'down':
+                    container.network.remove(idx)
+                    continue
+                for prop in ('ipv4', 'type', 'link'):
+                    cfgkey = 'lxc.network.%s.%s' % (idx, prop)
+                    try:
+                        value = container.get_config_item(cfgkey)
+                    except KeyError:
+                        value = ''
+                    if network[prop] != value:
+                        if network[prop]:
+                            container.set_config_item(cfgkey, network[prop])
+                        else:
+                            container.clear_config_item(cfgkey)
 
             if form['utsname'] != cfg['utsname'] and \
                     re.match('(?!^containers$)|^(([a-zA-Z0-9]|[a-zA-Z0-9]'
                              '[a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|'
                              '[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$',
                              form['utsname']):
-                lwp.push_config_value('lxc.utsname', form['utsname'],
-                                      container=container)
-                flash(u'Hostname updated for %s!' % container, 'success')
-
-            if form['flags'] != cfg['flags'] and \
-                    re.match('^(up|down)$', form['flags']):
-                lwp.push_config_value('lxc.network.flags', form['flags'],
-                                      container=container)
-                flash(u'Network flag updated for %s!' % container, 'success')
-
-            if form['type'] != cfg['type'] and \
-                    re.match('^\w+$', form['type']):
-                lwp.push_config_value('lxc.network.type', form['type'],
-                                      container=container)
-                flash(u'Link type updated for %s!' % container, 'success')
-
-            if form['link'] != cfg['link'] and \
-                    re.match('^[a-zA-Z0-9_-]+$', form['link']):
-                lwp.push_config_value('lxc.network.link', form['link'],
-                                      container=container)
-                flash(u'Link name updated for %s!' % container, 'success')
-
-            if form['hwaddr'] != cfg['hwaddr'] and \
-                    re.match('^([a-fA-F0-9]{2}[:|\-]?){6}$', form['hwaddr']):
-                lwp.push_config_value('lxc.network.hwaddr', form['hwaddr'],
-                                      container=container)
-                flash(u'Hardware address updated for %s!' % container,
-                      'success')
-
-            if (not form['ipv4'] and form['ipv4'] != cfg['ipv4']) or \
-                    (form['ipv4'] != cfg['ipv4'] and
-                     re.match('^%s$' % ip_regex, form['ipv4'])):
-                lwp.push_config_value('lxc.network.ipv4', form['ipv4'],
-                                      container=container)
-                flash(u'IP address updated for %s!' % container, 'success')
+                container.set_config_item('lxc.utsname', form['utsname'])
+                flash(u'Hostname updated for %s!' % container.name, 'success')
 
             if form['memlimit'] != cfg['memlimit'] and \
-                    form['memlimit'].isdigit() and \
-                    int(form['memlimit']) <= int(host_memory['total']):
-                if int(form['memlimit']) == int(host_memory['total']):
-                    form['memlimit'] = ''
+                    form['memlimit'] <= int(host_memory['total']):
+                configkey = lwp.cgroup['memlimit']
+                if form['memlimit'] >= int(host_memory['total'] - 10):
+                    form['memlimit'] = 0
 
                 if form['memlimit'] != cfg['memlimit']:
-                    lwp.push_config_value('lxc.cgroup.memory.limit_in_bytes',
-                                          form['memlimit'],
-                                          container=container)
-                    if info["state"].lower() != 'stopped':
-                        lxc.cgroup(container,
-                                   'lxc.cgroup.memory.limit_in_bytes',
-                                   form['memlimit'])
-                    flash(u'Memory limit updated for %s!' % container,
+                    if form['memlimit'] == 0:
+                        container.clear_config_item(configkey)
+                    else:
+                        container.set_config_item(configkey, str(form['memlimit']))
+                    if container.state != 'STOPPED':
+                        container.set_cgroup_item(configkey, str(form['memlimit']))
+                    flash(u'Memory limit updated for %s!' % container.name,
                           'success')
 
             if form['swlimit'] != cfg['swlimit'] and \
-                    form['swlimit'].isdigit() and \
-                    int(form['swlimit']) <= int(host_memory['total'] * 2):
-                if int(form['swlimit']) == int(host_memory['total'] * 2):
-                    form['swlimit'] = ''
+                    form['swlimit'] <= int(host_memory['total'] * 2):
 
-                if form['swlimit'].isdigit():
-                    form['swlimit'] = int(form['swlimit'])
-
-                if form['memlimit'].isdigit():
-                    form['memlimit'] = int(form['memlimit'])
+                configkey = lwp.cgroup['swlimit']
+                if form['swlimit'] == int(host_memory['total'] * 2):
+                    form['swlimit'] = 0
 
                 if (form['memlimit'] == '' and form['swlimit'] != '') or \
                         (form['memlimit'] > form['swlimit'] and
@@ -253,42 +244,34 @@ def edit(name=None):
 
                 elif form['swlimit'] != cfg['swlimit'] and \
                         form['memlimit'] <= form['swlimit']:
-                    lwp.push_config_value(
-                        'lxc.cgroup.memory.memsw.limit_in_bytes',
-                        form['swlimit'], container=container)
+                    container.set_config_item(configkey, str(form['swlimit']))
 
-                    if info["state"].lower() != 'stopped':
-                        lxc.cgroup(container,
-                                   'lxc.cgroup.memory.memsw.limit_in_bytes',
-                                   form['swlimit'])
-                    flash(u'Swap limit updated for %s!' % container, 'success')
+                    if container.state != 'STOPPED':
+                        container.set_cgroup_item(configkey, str(form['swlimit']))
+                    flash(u'Swap limit updated for %s!' % container.name, 'success')
 
             if (not form['cpus'] and form['cpus'] != cfg['cpus']) or \
                     (form['cpus'] != cfg['cpus'] and
                      re.match('^[0-9,-]+$', form['cpus'])):
-                lwp.push_config_value('lxc.cgroup.cpuset.cpus', form['cpus'],
-                                      container=container)
+                container.set_config_item('lxxc.cgroup.cpuset.cpus', str(form['cpus']))
 
-                if info["state"].lower() != 'stopped':
-                        lxc.cgroup(container, 'lxc.cgroup.cpuset.cpus',
-                                   form['cpus'])
-                flash(u'CPUs updated for %s!' % container, 'success')
+                if container.state != 'STOPPED':
+                    container.set_cgroup_item('lxc.cgroup.cpuset.cpus', str(form['cpus']))
+                flash(u'CPUs updated for %s!' % container.name, 'success')
 
             if (not form['shares'] and form['shares'] != cfg['shares']) or \
                     (form['shares'] != cfg['shares'] and
                      re.match('^[0-9]+$', form['shares'])):
-                lwp.push_config_value('lxc.cgroup.cpu.shares', form['shares'],
-                                      container=container)
-                if info["state"].lower() != 'stopped':
-                        lxc.cgroup(container, 'lxc.cgroup.cpu.shares',
-                                   form['shares'])
-                flash(u'CPU shares updated for %s!' % container, 'success')
+                container.set_config_item('lxc.cgroup.cpu.shares', str(form['shares']))
+                if container.state != 'STOPPED':
+                    container.set_cgroup_item('lxc.cgroup.cpu.shares', str(form['shares']))
+                flash(u'CPU shares updated for %s!' % container.name, 'success')
 
             if form['rootfs'] != cfg['rootfs'] and \
                     re.match('^[a-zA-Z0-9_/\-\.]+', form['rootfs']):
-                lwp.push_config_value('lxc.rootfs', form['rootfs'],
-                                      container=container)
-                flash(u'Rootfs updated!' % container, 'success')
+                container.set_config_item('lxc.rootfs', form['rootfs'])
+                flash(u'Rootfs updated!' % container.name, 'success')
+            container.save_config()
 
             auto = lwp.ls_auto()
             if form['autostart'] == 'True' and \
@@ -307,8 +290,6 @@ def edit(name=None):
                 except OSError:
                     flash(u'Unable to remove symlink', 'error')
 
-        info = dict()
-        container = lxc.Container(name)
         status = container.state
         pid = container.init_pid
 
